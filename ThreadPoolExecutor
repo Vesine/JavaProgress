@@ -1,0 +1,253 @@
+线程池： 简单理解，它就是一个管理线程的池子。
+
+1. 它帮我们管理线程，避免增加创建线程和销毁线程的资源损耗。因为线程其实也是一个对象，创建一个对象，需要经过类加载过程，销毁一个对象，需要走GC垃圾回收流程，都是需要资源开销的。
+1. 提高响应速度。 如果任务到达了，相对于从线程池拿线程，重新去创建一条线程执行，速度肯定慢很多。
+1. 重复利用。 线程用完，再放回池子，可以达到重复利用的效果，节省资源。
+
+```
+public ThreadPoolExecutor(int corePoolSize, int maximumPoolSize,long keepAliveTime,TimeUnit unit,
+   BlockingQueue<Runnable> workQueue,
+   ThreadFactory threadFactory,
+   RejectedExecutionHandler handler)
+```
+
+
+#### 工作流程
+
+![image](https://user-gold-cdn.xitu.io/2019/7/7/16bca03a5a6fd78f?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+#### 核心参数
+- corePoolSize : 核心线程数线程数定义了最小可以同时运行的线程数量。
+- maximumPoolSize : 当队列中存放的任务达到队列容量的时候，当前可以同时运行的线程数量变为最大线程数。
+- workQueue: 当新任务来的时候会先判断当前运行的线程数量是否达到核心线程数，如果达到的话，新任务就会被存放在队列中。
+- keepAliveTime:当线程池中的线程数量大于 corePoolSize 的时候，如果这时没有新的任务提交，核心线程外的线程不会立即销毁，而是会等待，直到等待的时间超过了 keepAliveTime才会被回收销毁；
+- threadFactory :executor 创建新线程的时候会用到。
+- handler :拒绝策略。
+
+#### 拒绝策略
+- AbortPolicy(抛出一个异常，默认策略)
+- DiscardPolicy(直接丢弃任务)
+- DiscardOldestPolicy（丢弃队列里最老的任务，将当前这个任务继续提交给线程池）
+- CallerRunsPolicy（交给线程池调用所在的线程进行处理，这种策略会降低对于新任务提交速度，影响程序的整体性能。)
+
+#### 线程池异常处理
+![image](https://user-gold-cdn.xitu.io/2019/7/14/16bec33ca5559c93?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+#### 线程池工作队列
+
+##### ArrayBlockingQueue
+ArrayBlockingQueue（有界队列）是一个用数组实现的有界阻塞队列，按FIFO排序量。
+
+##### LinkedBlockingQueue
+LinkedBlockingQueue（可设置容量队列）基于链表结构的阻塞队列，按FIFO排序任务，容量可以选择进行设置，不设置的话，将是一个无边界的阻塞队列，最大长度为Integer.MAX_VALUE，吞吐量通常要高于ArrayBlockingQuene；newFixedThreadPool线程池使用了这个队列
+
+##### DelayQueue
+DelayQueue（延迟队列）是一个任务定时周期的延迟执行的队列。根据指定的执行时间从小到大排序，否则根据插入到队列的先后排序。newScheduledThreadPool线程池使用了这个队列。
+
+##### PriorityBlockingQueue
+PriorityBlockingQueue（优先级队列）是具有优先级的无界阻塞队列。
+
+##### SynchronousQueue
+SynchronousQueue（同步队列）一个不存储元素的阻塞队列，每个插入操作必须等到另一个线程调用移除操作，否则插入操作一直处于阻塞状态，吞吐量通常要高于LinkedBlockingQuene，newCachedThreadPool线程池使用了这个队列。
+
+#### 核心源码
+
+```
+// 存放线程池的运行状态 (runState) 和线程池内有效线程的数量 (workerCount)
+   private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
+
+    private static int workerCountOf(int c) {
+        return c & CAPACITY;
+    }
+
+    private final BlockingQueue<Runnable> workQueue;
+
+    public void execute(Runnable command) {
+        // 如果任务为null，则抛出异常。
+        if (command == null)
+            throw new NullPointerException();
+        // ctl 中保存的线程池当前的一些状态信息
+        int c = ctl.get();
+
+        //  下面会涉及到 3 步 操作
+        // 1.首先判断当前线程池中之行的任务数量是否小于 corePoolSize
+        // 如果小于的话，通过addWorker(command, true)新建一个线程，并将任务(command)添加到该线程中；然后，启动该线程从而执行任务。
+        if (workerCountOf(c) < corePoolSize) {
+            if (addWorker(command, true))
+                return;
+            c = ctl.get();
+        }
+        // 2.如果当前之行的任务数量大于等于 corePoolSize 的时候就会走到这里
+        // 通过 isRunning 方法判断线程池状态，线程池处于 RUNNING 状态才会被并且队列可以加入任务，该任务才会被加入进去
+        if (isRunning(c) && workQueue.offer(command)) {
+            int recheck = ctl.get();
+            // 再次获取线程池状态，如果线程池状态不是 RUNNING 状态就需要从任务队列中移除任务，并尝试判断线程是否全部执行完毕。同时执行拒绝策略。
+            if (!isRunning(recheck) && remove(command))
+                reject(command);
+                // 如果当前线程池为空就新创建一个线程并执行。
+            else if (workerCountOf(recheck) == 0)
+                addWorker(null, false);
+        }
+        //3. 通过addWorker(command, false)新建一个线程，并将任务(command)添加到该线程中；然后，启动该线程从而执行任务。
+        //如果addWorker(command, false)执行失败，则通过reject()执行相应的拒绝策略的内容。
+        else if (!addWorker(command, false))
+            reject(command);
+    }
+```
+
+
+
+### 常见线程池
+#### newFixedThreadPool (固定数目线程的线程池)
+
+```
+public static ExecutorService newFixedThreadPool(int nThreads, ThreadFactory threadFactory) {
+    return new ThreadPoolExecutor(
+        nThreads, 
+        nThreads,
+        0L, 
+        TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<Runnable>(),
+        threadFactory
+    );
+}
+```
+
+**特点**
+- 核心线程数和最大线程数大小一样
+- 没有所谓的非空闲时间，即keepAliveTime为0
+- 阻塞队列为无界队列LinkedBlockingQueue
+
+**工作机制**
+![image](https://user-gold-cdn.xitu.io/2019/7/14/16bf109b642bc12e?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+![image](https://pic3.zhimg.com/80/v2-984ba405f67249ab3cc043c75dbcbedd_hd.jpg)
+
+**示例代码**
+
+```
+ExecutorService executor = Executors.newFixedThreadPool(10);
+for (int i = 0; i < Integer.MAX_VALUE; i++) {
+    executor.execute(()->{
+        try {
+            Thread.sleep(10000);
+        } catch (InterruptedException e) {
+            //do nothing
+        }
+    }
+);
+```
+
+**使用场景**
+
+FixedThreadPool适用于处理CPU密集型的任务，确保CPU在长期被工作线程使用的情况下，尽可能的少的分配线程，即适用执行长期的任务。
+
+**问题**
+
+**使用无界队列的线程池会导致内存飙升吗？**
+
+newFixedThreadPool使用了无界的阻塞队列LinkedBlockingQueue，如果线程获取一个任务后，任务的执行时间比较长(比如，上面demo设置了10秒)，会导致队列的任务越积越多，导致机器内存使用不停飙升， 最终导致OOM。
+
+
+
+#### newCachedThreadPool(可缓存线程的线程池)
+
+```
+public static ExecutorService newCachedThreadPool(ThreadFactory threadFactory) {
+    return new ThreadPoolExecutor(
+        0, 
+        Integer.MAX_VALUE,
+        60L, 
+        TimeUnit.SECONDS,
+        new SynchronousQueue<Runnable>(),
+        hreadFactory
+    );
+}
+```
+
+**特点**
+- 核心线程数为0
+- 最大线程数为Integer.MAX_VALUE
+- 阻塞队列是SynchronousQueue
+- 非核心线程空闲存活时间为60秒
+
+当提交任务的速度大于处理任务的速度时，每次提交一个任务，就必然会创建一个线程。极端情况下会创建过多的线程，耗尽 CPU 和内存资源。由于空闲 60秒的线程会被终止，长时间保持空闲的 CachedThreadPool 不会占用任何资源。
+
+**工作机制**
+
+![image](https://user-gold-cdn.xitu.io/2019/7/15/16bf2d1734c8f96d?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+**使用场景**
+
+用于并发执行大量短期的小任务
+
+#### newSingleThreadExecutor(单线程的线程池)
+
+```
+public static ExecutorService newSingleThreadExecutor(ThreadFactory threadFactory) {
+    return new FinalizableDelegatedExecutorService(
+        new ThreadPoolExecutor(
+            1, 
+            1,
+            0L, 
+            TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<Runnable>(),
+            threadFactory
+        )
+    );
+}
+```
+
+**特点**
+
+- 核心线程数为1
+- 最大线程数也为1
+- 阻塞队列是LinkedBlockingQueue
+- keepAliveTime为0
+
+**工作机制**
+
+![image](https://user-gold-cdn.xitu.io/2019/7/15/16bf2e62d7dbaaea?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+**使用场景**
+
+适用于串行执行任务的场景，一个任务一个任务地执行。
+
+#### newScheduledThreadPool(定时及周期执行的线程池)
+
+```
+public ScheduledThreadPoolExecutor(int corePoolSize) {
+    super(corePoolSize, Integer.MAX_VALUE, 0, NANOSECONDS,
+          new DelayedWorkQueue());
+}
+```
+
+**特点**
+- 最大线程数为Integer.MAX_VALUE
+- 阻塞队列是DelayedWorkQueue
+- keepAliveTime为0
+- scheduleAtFixedRate() 按某种速率周期执行
+- scheduleWithFixedDelay() 在某个延迟后执行
+
+**工作机制**
+- 添加一个任务
+- 线程池中的线程从 DelayQueue 中取任务
+- 线程从 DelayQueue 中获取 time 大于等于当前时间的task
+- 执行完后修改这个 task 的 time 为下次被执行的时间
+- 这个 task 放回DelayQueue队列中
+
+**使用场景**
+
+周期性执行任务的场景，需要限制线程数量的场景
+
+### 线程池状态
+
+- RUNNING 自然是运行状态，指可以接受任务执行队列里的任务
+- SHUTDOWN 指调用了 shutdown() 方法，不再接受新任务了，但是队列里的任务得执行完毕。
+- STOP 指调用了 shutdownNow() 方法，不再接受新任务，同时抛弃阻塞队列里的所有任务并中断所有正在执行任务。
+- TIDYING 所有任务都执行完毕，在调用 shutdown()/shutdownNow() 中都会尝试更新为这个状态。
+- TERMINATED 终止状态，当执行 terminated() 后会更新为这个状态。
+
+![image](https://user-gold-cdn.xitu.io/2018/7/30/164e8a5a634e71b4?imageView2/0/w/1280/h/960/format/webp/ignore-error/1)
+
+
